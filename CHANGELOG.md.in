@@ -1,6 +1,6 @@
 # Change Log
 
-## [Unreleased]
+## [@VERSION@] - @UTC_DATE@
 
 ### Added
 - Support for changing corosync configuration in an existing cluster
