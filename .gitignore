@@ -64,6 +64,11 @@ pcsd/test/test_corosyncconf.rb
 build/
 *.egg-info
 
+rpm/*.gem
+rpm/Gemfile
+rpm/*.tar*
+rpm/*.rpm
+
 aclocal.m4
 autom4te.cache/
 compile

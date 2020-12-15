@@ -2,7 +2,7 @@ EXTRA_DIST		= autogen.sh \
 			  .version make/release.mk \
 			  make/git-version-gen make/gitlog-to-changelog \
 			  .eslintrc .gitlab-ci.yml \
-			  MANIFEST.in .travis.yml pcs.spec.in \
+			  MANIFEST.in .travis.yml rpm/pcs.spec.in \
 			  mypy.ini pyproject.toml pylintrc \
 			  test/fedora31/Dockerfile test/fedora32/Dockerfile test/centos8/Dockerfile
 
@@ -13,8 +13,9 @@ MAINTAINERCLEANFILES	= Makefile.in aclocal.m4 configure depcomp \
 			  autoheader automake autoconf libtool libtoolize \
 			  ltmain.sh compile autoscan.log \
 			  configure.scan requirements.txt Gemfile Gemfile.lock
+			  rpm/Gemfile rpm/Gemfile.lock
 
-SPEC			= $(PACKAGE_NAME).spec
+SPEC			= rpm/$(PACKAGE_NAME).spec
 
 TARFILES		= $(PACKAGE_NAME)-$(VERSION).tar.bz2 \
 			  $(PACKAGE_NAME)-$(VERSION).tar.gz \
@@ -36,14 +37,22 @@ define build_python_bundle
 	$(PYTHON) setup.py install --install-lib /packages/ --root $(2)
 endef
 
-PYAGENTX_VERSION="0.4.pcs.2"
 PYAGENTX_URI="https://github.com/ondrejmular/pyagentx/archive/v${PYAGENTX_VERSION}.tar.gz"
+
+download_pyagentx:
+	if [ ! -f ${abs_top_builddir}/rpm/pyagentx-${PYAGENTX_VERSION}.tar.gz ]; then \
+		$(WGET) -q -O ${abs_top_builddir}/rpm/pyagentx-${PYAGENTX_VERSION}.tar.gz ${PYAGENTX_URI}; \
+	fi
+
+download_rpm_python_deps: rpm/requirements.txt download_pyagentx
+	$(PIP) download --no-deps --dest rpm/ --no-binary :all: -r rpm/requirements.txt
 
 ${abs_top_builddir}/$(PCS_BUNDLED_DIR_LOCAL)/src/pyagentx-${PYAGENTX_VERSION}:
 if BUILD_PIPMOD_PYAGENTX
 	if [ ! -d ${abs_top_builddir}/$(PCS_BUNDLED_DIR_LOCAL)/src/pyagentx-${PYAGENTX_VERSION} ]; then \
 		$(MKDIR_P) ${abs_top_builddir}/$(PCS_BUNDLED_DIR_LOCAL)/src; \
-		$(WGET) -qO- ${PYAGENTX_URI} | $(TAR) xvz -C ${abs_top_builddir}/${PCS_BUNDLED_DIR_LOCAL}/src; \
+		$(MAKE) download_pyagentx; \
+		$(TAR) xvz -C ${abs_top_builddir}/${PCS_BUNDLED_DIR_LOCAL}/src -f ${abs_top_builddir}/rpm/pyagentx-${PYAGENTX_VERSION}.tar.gz; \
 	fi
 endif
 
@@ -130,6 +139,22 @@ if EXECUTE_TIER1_TESTS
 	$(PYTHON) ${abs_builddir}/pcs_test/suite.py -v --vanilla --tier1
 endif
 
+download_rpm_ruby_deps:
+	rm -rf rpm/.bundle rpm/Gemfile.lock rpm/*.gem
+	$(MKDIR_P) rpm/.bundle
+	echo '---' > rpm/.bundle/config
+	echo 'BUNDLE_DISABLE_SHARED_GEMS: "true"' >> rpm/.bundle/config
+	echo 'BUNDLE_PATH: "rubycache"' >> rpm/.bundle/config
+	echo 'BUNDLE_BUILD: \"$(ruby_LIBS)\"' >> rpm/.bundle/config
+	$(MKDIR_P) rpm/rubycache/ruby/$(RUBY_VER)/cache/
+	if [ -d ${PCSD_BUNDLED_DIR_LOCAL} ]; then \
+		cp ${PCSD_BUNDLED_DIR_LOCAL}/cache/*.gem rpm/rubycache/ruby/$(RUBY_VER)/cache/; \
+	fi
+	cd rpm && $(BUNDLE) && cd -
+	rm -rf rpm/.bundle rpm/Gemfile.lock
+	mv rpm/rubycache/ruby/$(RUBY_VER)/cache/*.gem rpm/
+	rm -rf rpm/rubycache/
+
 install_ruby_deps:
 	rm -rf .bundle Gemfile.lock
 	$(MKDIR_P) .bundle
@@ -209,31 +234,16 @@ test-tree-clean:
 
 check-local: check-local-deps test-tree-prep pylint black_check mypy tests_tier0 tests_tier1 pcsd-tests test-tree-clean
 
-BUILT_SOURCES = .version
-.version:
-	echo $(VERSION) > $@-t && mv $@-t $@
-
-dist-hook: gen-ChangeLog
-	echo $(VERSION) > $(distdir)/.tarball-version
-
-gen_start_date = 2000-01-01
-.PHONY: gen-ChangeLog
-gen-ChangeLog:
-	if test -d .git; then						\
-		$(top_srcdir)/make/gitlog-to-changelog			\
-			--since=$(gen_start_date) > $(distdir)/cl-t;	\
-		rm -f $(distdir)/ChangeLog;				\
-		mv $(distdir)/cl-t $(distdir)/ChangeLog;		\
-	fi
-
 clean-local: test-tree-clean
 	$(PYTHON) setup.py clean
 	rm -rf Gemfile.lock .bundle pcs_test/resources/temp
+	rm -rf $(PACKAGE_NAME)-$(VERSION).tar.* rpm/*tar* rpm/*.gem rpm/*.rpm
 
 # this will get rid of "libtoolized" m4 files
 distclean-local:
 	rm -rf Gemfile requirements.txt
 	rm -rf .mypy_cache
+	rm -rf rpm/requirements.txt
 	rm -rf ${abs_top_builddir}/${PCS_BUNDLED_DIR_LOCAL} ${abs_top_builddir}/${PCSD_BUNDLED_DIR_ROOT_LOCAL}
 	rm -rf $(filter-out \
 	         $(top_builddir)/m4/ac_compare_versions.m4 \
@@ -242,68 +252,103 @@ distclean-local:
 		 $(top_builddir)/m4/ax_prog_date.m4, \
 		 $(wildcard $(top_builddir)/m4/*.m4))
 
+# release/versioning
+BUILT_SOURCES	= .version
+.version:
+	echo $(VERSION) > $@-t && mv $@-t $@
+
+dist-hook: gen-ChangeLog
+	echo $(VERSION) > $(distdir)/.tarball-version
+	echo $(SOURCE_EPOCH) > $(distdir)/source_epoch
+
+gen_start_date = 2000-01-01
+.PHONY: gen-ChangeLog
+gen-ChangeLog:
+	if test -d $(abs_srcdir)/.git; then				\
+		LC_ALL=C $(top_srcdir)/build-aux/gitlog-to-changelog	\
+			--since=$(gen_start_date) > $(distdir)/cl-t;	\
+		rm -f $(distdir)/ChangeLog;				\
+		mv $(distdir)/cl-t $(distdir)/ChangeLog;		\
+	fi
+
 ## make rpm/srpm section.
-$(SPEC): $(SPEC).in
+#$(SPEC): $(SPEC).in .version config.status download_rpm_python_deps download_rpm_ruby_deps
+$(SPEC): $(SPEC).in .version config.status
 	rm -f $@-t $@
-	date="$(shell LC_ALL=C date "+%a %b %d %Y")" && \
-	specver="1" && \
-	rcver="" && \
-	dirty="" && \
-	alphatag="" && \
-	numcomm="" && \
-	ver="$(VERSION)" && \
-	if echo $$ver | grep -q -- "-dirty$$"; then \
-		dirty="dirty" && \
-		echo VERSION IS DIRTY && \
-		ver=`echo $$ver | sed -e "s/-dirty$$//"`; \
-	fi && \
-	echo $$ver && \
-	if echo $$ver | grep -q -- "-"; then \
-		alphatag=`echo $$ver | sed -e "s/.*-//"` && \
-		echo VERSION HAS ALPHATAG && \
-		ver=`echo $$ver | sed -e "s/-.*//"`; \
-	fi && \
-	echo $$ver && \
-	if [ -n "$$alphatag" ]; then \
-		echo VERSION HAS NUMCOMMITS && \
-		numcomm=`echo $$ver | sed -e 's/.*\.//'` && \
-		ver=`echo $$ver | sed -e 's/.'$$numcomm'$$//'`; \
-	fi && \
-	if echo $$ver | grep -q "\.[[:digit:]]rc[[:digit:]]"; then \
-		rpmver=`echo $$ver | sed -e "s/rc[[:digit:]].*//g"` && \
-		rcver=`echo $$ver | sed -e "s/.*\(rc[[:digit:]]\).*/\1/g"` && \
-		specver="0"; \
+	date="`LC_ALL=C $(UTC_DATE_AT)$(SOURCE_EPOCH) "+%a %b %d %Y"`" && \
+	gvgver="`cd $(abs_srcdir); make/git-version-gen --fallback $(VERSION) .tarball-version .gitarchivever`" && \
+	if [ "$$gvgver" = "`echo $$gvgver | sed 's/-/./'`" ];then \
+		rpmver="$$gvgver" && \
+		alphatag="" && \
+		dirty="" && \
+		numcomm="0"; \
 	else \
-		rpmver=$$ver; \
+		gitver="`echo $$gvgver | sed 's/\(.*\)\./\1-/'`" && \
+		rpmver=`echo $$gitver | sed 's/-.*//g'` && \
+		alphatag=`echo $$gvgver | sed 's/[^-]*-\([^-]*\).*/\1/'` && \
+		numcomm=`echo $$gitver | sed 's/[^-]*-\([^-]*\).*/\1/'` && \
+		dirty="" && \
+		if [ "`echo $$gitver | sed 's/^.*-dirty$$//g'`" = "" ];then \
+			dirty="dirty"; \
+		fi \
 	fi && \
-	echo $$rpmver $$rcver && \
-	sed \
-		-e "s#@version@#$$rpmver#g" \
-		-e "s#@alphatag@#$$alphatag#g" \
-		-e "s#@numcomm@#$$numcomm#g" \
-		-e "s#@dirty@#$$dirty#g" \
-		-e "s#@date@#$$date#g" \
-		-e "s#@specver@#$$specver#g" \
-		-e "s#@rcver@#$$rcver#g" \
-		-e "s#@rgmanager@#$(RGMANAGER)#g" \
-		-e "s#@linux-ha@#$(LINUX_HA)#g" \
-		-e "s#@compat-habindir@#$(COMPAT_HABINDIR)#g" \
-	$< > $@-t; \
-	if [ -z "$$dirty" ]; then sed -i -e "s#%glo.*dirty.*##g" $@-t; fi; \
-	if [ -z "$$alphatag" ]; then sed -i -e "s#%glo.*alphatag.*##g" $@-t; fi; \
-	if [ -z "$$numcomm" ]; then sed -i -e "s#%glo.*numcomm.*##g" $@-t; fi; \
-	if [ -z "$$rcver" ]; then sed -i -e "s#%glo.*rcver.*##g" $@-t; fi
+	if [ -n "$$dirty" ]; then dirty="dirty"; else dirty=""; fi && \
+	if [ "$$numcomm" = "0" ]; then \
+		sed \
+			-e "s#@version@#$$rpmver#g" \
+			-e "s#%glo.*alpha.*##g" \
+			-e "s#%glo.*numcomm.*##g" \
+			-e "s#@dirty@#$$dirty#g" \
+			-e "s#@date@#$$date#g" \
+		$(abs_srcdir)/$@.in > $@-t; \
+	else \
+		sed \
+			-e "s#@version@#$$rpmver#g" \
+			-e "s#@alphatag@#$$alphatag#g" \
+			-e "s#@numcomm@#$$numcomm#g" \
+			-e "s#@dirty@#$$dirty#g" \
+			-e "s#@date@#$$date#g" \
+		$(abs_srcdir)/$@.in > $@-t; \
+	fi; \
+	if [ -z "$$dirty" ]; then sed -i -e "s#%glo.*dirty.*##g" $@-t; fi && \
+	sed -i -e "s#@pyagentx_version@#${PYAGENTX_VERSION}#g" $@-t && \
+	pylist="`ls rpm/*.tar.gz | grep -v ^rpm/pyagentx- | grep -v ^rpm/pcs- | sed -e 's#rpm/##g' -e 's#.tar.gz##'`" && \
+	pysrc="`base=42; for i in $$pylist; do echo 'Source'$$base': '$$i'.tar.gz' && let "base=base+1"; done`" && \
+	$(AWK) -i inplace -v r="$$pysrc" '{gsub(/@pysrc@/,r)}1' $@-t; \
+	pybundle="`for i in $$pylist; do echo $$i | grep -v ^distro- | grep -v ^dataclasses- | sed 's/\(.*\)-\(.*\)/Provides: bundled(\1) = \2/'; done`" && \
+	$(AWK) -i inplace -v r="$$pybundle" '{gsub(/@pybundle@/,r)}1' $@-t; \
+	pydataclassesbundle="`for i in $$pylist; do echo $$i | grep ^dataclasses- | sed 's/\(.*\)-\(.*\)/Provides: bundled(\1) = \2/'; done`" && \
+	$(AWK) -i inplace -v r="$$pydataclassesbundle" '{gsub(/@pydataclassesbundle@/,r)}1' $@-t; \
+	pydistrobundle="`for i in $$pylist; do echo $$i | grep ^distro- | sed 's/\(.*\)-\(.*\)/Provides: bundled(\1) = \2/'; done`" && \
+	$(AWK) -i inplace -v r="$$pydistrobundle" '{gsub(/@pydistrobundle@/,r)}1' $@-t; \
+	gemlist="`for i in rpm/*.gem; do echo $$i | sed -e 's#rpm/##g' -e 's#.gem##g'; done`" && \
+	gemsrc="`base=80; for i in $$gemlist; do echo 'Source'$$base': '$$i'.gem' && let "base=base+1"; done`" && \
+	$(AWK) -i inplace -v r="$$gemsrc" '{gsub(/@gemsrc@/,r)}1' $@-t; \
+	gembundle="`for i in $$gemlist; do echo $$i | sed 's/\(.*\)-\(.*\)/Provides: bundled(\1) = \2/'; done`" && \
+	$(AWK) -i inplace -v r="$$gembundle" '{gsub(/@gembundle@/,r)}1' $@-t; \
+	gemcache="`echo $(MKDIR_P) $(PCSD_BUNDLED_DIR_ROOT_LOCAL)/ruby/"\\\$$rubyver"/cache; base=80; for i in $$gemlist; do echo 'cp -f %SOURCE'$$base' $(PCSD_BUNDLED_DIR_ROOT_LOCAL)/ruby/\\\$$rubyver/cache' && let "base=base+1"; done`" && \
+	$(AWK) -i inplace -v r="$$gemcache" '{gsub(/@gemcache@/,r)}1' $@-t; \
+	geminstall="`echo '$(PCSD_BUNDLED_DIR_ROOT_LOCAL) \\\'; for i in $$gemlist; do echo '     $(PCSD_BUNDLED_DIR_ROOT_LOCAL)/ruby/\\\$$rubyver/cache/'$$i'.gem \\\'; done`" && \
+	$(AWK) -i inplace -v r="$$geminstall" '{gsub(/@geminstall@/,r)}1' $@-t;
 	chmod a-w $@-t
 	mv $@-t $@
+	rm -f $@-t*
+
+#if BUILD_SCTP
+#	sed -i -e "s#@sctp@#bcond_without#g" $@-t
+#else
+#	sed -i -e "s#@sctp@#bcond_with#g" $@-t
+#endif
 
 $(TARFILES):
 	$(MAKE) dist
+	cp $(TARFILES) $(abs_top_builddir)/rpm
 
-RPMBUILDOPTS    = --define "_sourcedir $(abs_builddir)" \
-		  --define "_specdir $(abs_builddir)" \
-		  --define "_builddir $(abs_builddir)" \
-		  --define "_srcrpmdir $(abs_builddir)" \
-		  --define "_rpmdir $(abs_builddir)"
+RPMBUILDOPTS    = --define "_sourcedir $(abs_top_builddir)/rpm" \
+		  --define "_specdir $(abs_top_builddir)/rpm" \
+		  --define "_builddir $(abs_top_builddir)/rpm" \
+		  --define "_srcrpmdir $(abs_top_builddir)/rpm" \
+		  --define "_rpmdir $(abs_top_builddir)/rpm"
 
 srpm: clean
 	$(MAKE) $(SPEC) $(TARFILES)

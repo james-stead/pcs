@@ -222,53 +222,74 @@ else
 fi
 AC_SUBST([PCS_BUNDLED_DIR])
 
-rm -rf requirements.txt
+rm -rf requirements.txt rpm/requirements.txt
 touch requirements.txt
+touch rpm/requirements.txt
 
 AC_DEFUN([PCS_CHECK_PYMOD], [
 	 if test "x$local_build" = "xyes"; then
-		AC_PIP_MODULE([$1], [$2], [$3], [echo "$1 $2" | sed -e 's# ##g' >> requirements.txt])
+		AC_PIP_MODULE([$1], [$2], [], [echo "$1 $2" | sed -e 's# ##g' >> requirements.txt])
 	 else
-		AC_PIP_MODULE([$1], [$2], [$3], [AC_MSG_ERROR([Python module $1 not found])])
+		if test "x$4" = "x"; then
+			AC_PIP_MODULE([$1], [$2], [], [AC_MSG_ERROR([Python module $1 not found])])
+		else
+			AC_PIP_MODULE([$1], [$2], [], [AC_MSG_WARN([Python module $1 not found])])
+		fi
+	 fi
+	 if test "x$3" = "xyes"; then
+		 echo "$1 $2" | sed -e 's# ##g' >> rpm/requirements.txt
 	 fi
 ])
 
+# required by rpm build
+PYAGENTX_VERSION=0.4.pcs.2
+AC_SUBST([PYAGENTX_VERSION])
+
+PCS_CHECK_PYMOD([setuptools])
 PCS_CHECK_PYMOD([lxml])
 PCS_CHECK_PYMOD([pycurl])
 PCS_CHECK_PYMOD([pyparsing])
 PCS_CHECK_PYMOD([pyOpenSSL])
-PCS_CHECK_PYMOD([dacite])
-PCS_CHECK_PYMOD([setuptools])
-PCS_CHECK_PYMOD([tornado], [>= 6.0.0])
-PCS_CHECK_PYMOD([python-dateutil], [>= 2.7.0])
+
+PCS_CHECK_PYMOD([dacite], [], [yes])
+PCS_CHECK_PYMOD([tornado], [>= 6.0.0], [yes])
+PCS_CHECK_PYMOD([python-dateutil], [>= 2.7.0], [yes])
 
 # python 3.6 needs dataclasses as well (added in 3.7)
 if test "$PYTHON_VERSION" = "3.6"; then
-	PCS_CHECK_PYMOD([dataclasses])
+	PCS_CHECK_PYMOD([dataclasses], [], [yes])
+else
+	echo dataclasses >> rpm/requirements.txt
 fi
 
 # python 3.8+ needs distro as well (removed from upstream lib)
 if printf '%s\n%s\n' "3.8" "$PYTHON_VERSION" | sort -V -C; then
-	PCS_CHECK_PYMOD([distro])
+	PCS_CHECK_PYMOD([distro], [], [yes])
+else
+	echo distro >> rpm/requirements.txt
 fi
 
+devfail=nonfatal
 if test "x$dev_tests" != "x"; then
-	PCS_CHECK_PYMOD([lxml-stubs])
-	PCS_CHECK_PYMOD([pylint], [== 2.6.0])
-	PCS_CHECK_PYMOD([astroid], [== 2.4.2])
-	PCS_CHECK_PYMOD([mypy], [== 0.790])
-	PCS_CHECK_PYMOD([black], [== 19.10b0])
+	devfail=""
 fi
+
+PCS_CHECK_PYMOD([lxml-stubs], [], [yes], [$devfail])
+PCS_CHECK_PYMOD([pylint], [== 2.6.0], [yes], [$devfail])
+PCS_CHECK_PYMOD([astroid], [== 2.4.2], [yes], [$devfail])
+PCS_CHECK_PYMOD([mypy], [== 0.790], [yes], [$devfail])
+PCS_CHECK_PYMOD([black], [== 19.10b0], [yes], [$devfail])
 
 # special case, because we need to download from github
 AC_PIP_MODULE([pyagentx], [], [], [], [$PCS_BUNDLED_DIR_LOCAL/packages])
 
+AC_CHECK_PROGS([WGET], [wget])
+if test "x$WGET" = "x"; then
+	AC_MSG_ERROR([Unable to find wget binary.])
+fi
+
 PYTHON_LIST_EMBEDDED=""
 if test "x$HAVE_PIPMOD_PYAGENTX" = "xno"; then
-	AC_CHECK_PROGS([WGET], [wget])
-	if test "x$WGET" = "x"; then
-		AC_MSG_ERROR([Unable to find wget binary.])
-	fi
 	AC_CHECK_PROGS([TAR], [tar])
 	if test "x$TAR" = "x"; then
 		AC_MSG_ERROR([Unable to find tar binary.])
@@ -299,6 +320,9 @@ rm -rf Gemfile Gemfile.lock
 echo "source 'https://rubygems.org'" > Gemfile
 echo "" >> Gemfile
 
+# rpm will require everything embedded
+cp Gemfile rpm/Gemfile
+
 # commodity function
 GEM_LIST_EMBEDDED=""
 
@@ -308,6 +332,7 @@ AC_DEFUN([PCS_CHECK_GEM], [
 	 else
 		AC_RUBY_GEM([$1], [$2], [$3], [AC_MSG_ERROR([ruby gem $1 not found])])
 	 fi
+	 echo "gem '$1'" >> rpm/Gemfile
 ])
 
 PCS_CHECK_GEM([backports])
