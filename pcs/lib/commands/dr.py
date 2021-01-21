@@ -333,12 +333,14 @@ def destroy(env: LibraryEnvironment, force_flags: Container[str] = ()) -> None:
     report_processor.report_list(report_list)
 
     if report_processor.has_errors:
+        print("I can destroy not")
         raise LibraryError()
 
     local_nodes, report_list = get_existing_nodes_names(env.get_corosync_conf())
     report_processor.report_list(report_list)
 
     if report_processor.has_errors:
+        print("I can destroy not")
         raise LibraryError()
 
     remote_nodes: List[str] = []
@@ -352,6 +354,7 @@ def destroy(env: LibraryEnvironment, force_flags: Container[str] = ()) -> None:
     )
     report_processor.report_list(report_list)
     if report_processor.has_errors:
+        print("I can destroy not")
         raise LibraryError()
 
     com_cmd = RemoveFilesWithoutForces(
